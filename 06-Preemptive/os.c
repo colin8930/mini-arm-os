@@ -67,16 +67,63 @@ void print_str(const char *str)
 #define TASK_WAIT_INTR  3
 #define TASK_DELAY      4
 #define TASK_EXIT       5
+#define PIROIRTY_LIMIT       5
 
-int task_count = 0;
-int current_task = 0;
+unsigned int task_count = 0;
+unsigned int current_task = 0;
 unsigned int user_stacks[TASK_LIMIT][STACK_SIZE];
+
+struct double_linklist {
+	struct double_linklist *prev;
+	struct double_linklist *next;
+	unsigned int id;
+};
+
+struct double_linklist ready_queue[PIROIRTY_LIMIT + 1];
+
+void queue_init()
+{
+	int i;
+	for (i = 0; i < PIROIRTY_LIMIT + 1; i++) {
+		ready_queue[i].prev = &ready_queue[i];
+		ready_queue[i].next = &ready_queue[i];
+	}
+}
+
+int queue_empty(struct double_linklist *list)
+{
+	if ((list -> next) == list)
+		return 1;
+	else return 0;
+}
+
+void queue_push(struct double_linklist *list, struct double_linklist *new)
+{
+
+	struct double_linklist *curr = list;
+	while ((curr -> next) != list) curr = curr -> next;
+	new -> prev = curr;
+	new -> next = list;
+	curr -> next = new;
+	list -> prev = new;
+
+}
+
+void queue_shift(struct double_linklist *list)
+{
+	struct double_linklist *shift = list -> next;
+	list -> next = (list -> next) -> next;
+	(list -> next) -> prev = list;
+	queue_push(list, shift);
+}
 
 struct task_TCB {
 	unsigned int priority;	/*< The priority of the task where 0 is the lowest priority. */
 	unsigned int *sp;	/*< Task stack pointer */
 	unsigned int status;	/*< The status of task. */
 	unsigned int delayTime;	/*< The tick to resume task */
+
+	struct double_linklist list;
 };
 
 struct task_TCB TCBs[TASK_LIMIT];
@@ -108,7 +155,10 @@ void *create_task(void (*start)(void), int priority)
 	TCBs[task_count].sp = stack;
 	TCBs[task_count].priority = priority;
 	TCBs[task_count].status = TASK_READY;
-
+	(TCBs[task_count].list).id = task_count;
+	(TCBs[task_count].list).next = &(TCBs[task_count].list);
+	(TCBs[task_count].list).prev = &(TCBs[task_count].list);
+	queue_push(&(ready_queue[priority]), &TCBs[task_count].list);
 	task_count++;
 	return 0;
 }
@@ -134,7 +184,7 @@ void task1_func(void)
 	syscall();
 	while (1) {
 		print_str("task1: Running...\n\r");
-		delay(1000);
+		delay(5000);
 	}
 }
 
@@ -145,7 +195,7 @@ void task2_func(void)
 	syscall();
 	while (1) {
 		print_str("task2: Running...\n\r");
-		delay(1000);
+		delay(5000);
 	}
 }
 
@@ -153,16 +203,12 @@ void scheduler()
 {
 	while (1) {
 		print_str("OS: Activate next task\n\r");
-		int highest;
 		int i;
-		highest = 0;
 
-		for (i = 0; i < task_count; i++) {
-			if (TCBs[i].status == TASK_READY) {
-				if (TCBs[i].priority > (unsigned int)highest) {
-					highest = TCBs[i].priority;
-					current_task = i;
-				}
+		for (i = PIROIRTY_LIMIT; i >= 0; i--) {
+			if (!queue_empty(&ready_queue[i])) {
+				current_task = (ready_queue[i].next) -> id;
+				queue_shift(&(ready_queue[i]));
 			}
 		}
 		TCBs[current_task].sp = activate(TCBs[current_task].sp);
@@ -176,15 +222,13 @@ int main(void)
 	usart_init();
 
 	init_TCB(TCBs);
-
+	queue_init();
 	print_str("OS: Starting...\n\r");
 	print_str("OS: First create task 1\n\r");
-	create_task(&task1_func, 1);
+	create_task(&task1_func, 2);
 	print_str("OS: Back to OS, create task 2\n\r");
 	create_task(&task2_func, 2);
 
-	print_str("OS: Back to OS, create idle task\n\r");
-	create_task(&idle, 1);
 
 	print_str("\nOS: Start scheduler!\n\r");
 
