@@ -2,12 +2,13 @@
 #include <stdint.h>
 #include "reg.h"
 #include "asm.h"
+#include "host.h"
 
 /* Size of our user task stacks in words */
 #define STACK_SIZE	256
 
 /* Number of user task */
-#define TASK_LIMIT	3
+#define TASK_LIMIT	5
 
 /* USART TXE Flag
  * This flag is cleared when data is written to USARTx_DR and
@@ -17,8 +18,8 @@
 
 void usart_init(void)
 {
-	*(RCC_APB2ENR) |= (uint32_t) (0x00000001 | 0x00000004);
-	*(RCC_APB1ENR) |= (uint32_t) (0x00020000);
+	*(RCC_APB2ENR) |= (uint32_t)(0x00000001 | 0x00000004);
+	*(RCC_APB1ENR) |= (uint32_t)(0x00020000);
 
 	/* USART2 Configuration, Rx->PA3, Tx->PA2 */
 	*(GPIOA_CRL) = 0x00004B00;
@@ -42,11 +43,7 @@ void print_str(const char *str)
 	}
 }
 
-void delay(int count)
-{
-	count *= 50000;
-	while (count--);
-}
+
 
 /* Exception return behavior */
 #define HANDLER_MSP	0xFFFFFFF1
@@ -63,9 +60,40 @@ void delay(int count)
  * works correctly.
  * http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dui0552a/Babefdjc.html
  */
-unsigned int *create_task(unsigned int *stack, void (*start)(void))
+
+#define TASK_READY      0
+#define TASK_WAIT_READ  1
+#define TASK_WAIT_WRITE 2
+#define TASK_WAIT_INTR  3
+#define TASK_DELAY      4
+#define TASK_EXIT       5
+
+int task_count = 0;
+int current_task = 0;
+unsigned int user_stacks[TASK_LIMIT][STACK_SIZE];
+
+struct task_TCB {
+	unsigned int priority;	/*< The priority of the task where 0 is the lowest priority. */
+	unsigned int *sp;	/*< Task stack pointer */
+	unsigned int status;	/*< The status of task. */
+	unsigned int delayTime;	/*< The tick to resume task */
+};
+
+struct task_TCB TCBs[TASK_LIMIT];
+
+void init_TCB(struct task_TCB *TCBs)
+{
+	int i;
+	for (i = 0; i < TASK_LIMIT; i++) {
+		TCBs[i].delayTime = 0;
+		TCBs[i].priority  = 0;
+	}
+}
+
+void *create_task(void (*start)(void), int priority)
 {
 	static int first = 1;
+	unsigned int *stack = (unsigned int *) user_stacks[task_count];
 
 	stack += STACK_SIZE - 32; /* End of stack, minus what we are about to push */
 	if (first) {
@@ -77,64 +105,94 @@ unsigned int *create_task(unsigned int *stack, void (*start)(void))
 		stack[16] = (unsigned int) 0x01000000; /* PSR Thumb bit */
 	}
 	stack = activate(stack);
+	TCBs[task_count].sp = stack;
+	TCBs[task_count].priority = priority;
+	TCBs[task_count].status = TASK_READY;
 
-	return stack;
+	task_count++;
+	return 0;
+}
+
+void delay(int count)
+{
+	count *= 50000;
+	while (count--);
+}
+
+void idle(void)
+{
+	print_str("idle: Created!\n\r");
+	print_str("idle: Now, return to kernel mode\n\r");
+	syscall();
+	while (1);
 }
 
 void task1_func(void)
 {
-	print_str("task1: Created!\n");
-	print_str("task1: Now, return to kernel mode\n");
+	print_str("task1: Created!\n\r");
+	print_str("task1: Now, return to kernel mode\n\r");
 	syscall();
 	while (1) {
-		print_str("task1: Running...\n");
+		print_str("task1: Running...\n\r");
 		delay(1000);
 	}
 }
 
 void task2_func(void)
 {
-	print_str("task2: Created!\n");
-	print_str("task2: Now, return to kernel mode\n");
+	print_str("task2: Created!\n\r");
+	print_str("task2: Now, return to kernel mode\n\r");
 	syscall();
 	while (1) {
-		print_str("task2: Running...\n");
+		print_str("task2: Running...\n\r");
 		delay(1000);
+	}
+}
+
+void scheduler()
+{
+	while (1) {
+		print_str("OS: Activate next task\n\r");
+		int highest;
+		int i;
+		highest = 0;
+
+		for (i = 0; i < task_count; i++) {
+			if (TCBs[i].status == TASK_READY) {
+				if (TCBs[i].priority > (unsigned int)highest) {
+					highest = TCBs[i].priority;
+					current_task = i;
+				}
+			}
+		}
+		TCBs[current_task].sp = activate(TCBs[current_task].sp);
+		print_str("OS: Back to OS\n\r");
 	}
 }
 
 int main(void)
 {
-	unsigned int user_stacks[TASK_LIMIT][STACK_SIZE];
-	unsigned int *usertasks[TASK_LIMIT];
-	size_t task_count = 0;
-	size_t current_task;
 
 	usart_init();
 
-	print_str("OS: Starting...\n");
-	print_str("OS: First create task 1\n");
-	usertasks[0] = create_task(user_stacks[0], &task1_func);
-	task_count += 1;
-	print_str("OS: Back to OS, create task 2\n");
-	usertasks[1] = create_task(user_stacks[1], &task2_func);
-	task_count += 1;
+	init_TCB(TCBs);
 
-	print_str("\nOS: Start round-robin scheduler!\n");
+	print_str("OS: Starting...\n\r");
+	print_str("OS: First create task 1\n\r");
+	create_task(&task1_func, 1);
+	print_str("OS: Back to OS, create task 2\n\r");
+	create_task(&task2_func, 2);
+
+	print_str("OS: Back to OS, create idle task\n\r");
+	create_task(&idle, 1);
+
+	print_str("\nOS: Start scheduler!\n\r");
 
 	/* SysTick configuration */
 	*SYSTICK_LOAD = 7200000;
 	*SYSTICK_VAL = 0;
 	*SYSTICK_CTRL = 0x07;
-	current_task = 0;
 
-	while (1) {
-		print_str("OS: Activate next task\n");
-		usertasks[current_task] = activate(usertasks[current_task]);
-		print_str("OS: Back to OS\n");
-
-		current_task = current_task == (task_count - 1) ? 0 : current_task + 1;
-	}
-
+	scheduler();
 	return 0;
 }
