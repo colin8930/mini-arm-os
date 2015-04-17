@@ -72,14 +72,131 @@ void print_str(const char *str)
 unsigned int task_count = 0;
 unsigned int current_task = 0;
 unsigned int user_stacks[TASK_LIMIT][STACK_SIZE];
+unsigned int tick_count = 0;
+int host_handle;
+int prev_task = 0;
+int start = 0;
 
-struct double_linklist {
-	struct double_linklist *prev;
-	struct double_linklist *next;
+void write(char* buf, int len)
+{
+	host_action(SYS_WRITE, host_handle, (void *)buf, len);
+}
+int _snprintf_int(int num, char * buf, int buf_size)
+{
+	int len = 1;
+	char *p;
+	int i = num < 0 ? -num : num;
+
+	for (; i >= 10; i /= 10, len++);
+
+	if (num < 0)
+		len++;
+
+	i = num;
+	p = buf + len - 1;
+	do {
+		if (p < buf + buf_size)
+			*p-- = '0' + i % 10;
+		i /= 10;
+	} while (i != 0);
+
+	if (num < 0)
+		*p = '-';
+
+	return len < buf_size ? len : buf_size;
+}
+
+unsigned int get_reload()
+{
+	return *SYSTICK_LOAD;
+}
+
+unsigned int get_current()
+{
+	return *SYSTICK_VAL;
+}
+
+unsigned int get_time()
+{
+	static const unsigned int scale = 100;  /* microsecond */
+
+	return tick_count * scale + (*SYSTICK_LOAD - *SYSTICK_VAL) / (*SYSTICK_LOAD / scale);
+}
+
+
+int snprintf(char *buf, size_t size, const char *format, ...)
+{
+	va_list ap;
+	char *dest = buf;
+	char *last = buf + size;
+	char ch;
+
+	va_start(ap, format);
+	for (ch = *format++; dest < last && ch; ch = *format++) {
+		if (ch == '%') {
+			ch = *format++;
+			switch (ch) {
+			case 's' : {
+					char *str = va_arg(ap, char*);
+					/* strncpy */
+					while (dest < last) {
+						if ((*dest = *str++))
+							dest++;
+						else
+							break;
+					}
+				}
+				break;
+			case 'd' : {
+					int num = va_arg(ap, int);
+					dest += _snprintf_int(num, dest, last - dest);
+				}
+				break;
+			case '%' :
+				*dest++ = ch;
+				break;
+			default :
+				return -1;
+			}
+		} else {
+			*dest++ = ch;
+		}
+	}
+	va_end(ap);
+
+	if (dest < last)
+		*dest = 0;
+	else
+		*--dest = 0;
+
+	return dest - buf;
+}
+
+void trace_task_switch()
+{
+	if(start){
+		char  buf[128];
+		int len = snprintf(buf, 128, "switch %d %d %d %d %d %d\n",
+	                   prev_task, current_task,
+	                   tick_count, 7200000,
+	                   7200000, *SYSTICK_VAL);
+		write(buf, len);
+	}
+}
+void trace_task_create(int task, unsigned int  priority)
+{
+	char  buf[128];
+	int len = snprintf(buf, 128, "task %d %d %d\n", task, priority, task);
+	write(buf, len);
+}
+
+struct list {
+	struct list *prev;
+	struct list *next;
 	unsigned int id;
 };
 
-struct double_linklist ready_queue[PIROIRTY_LIMIT + 1];
+struct list ready_queue[PIROIRTY_LIMIT + 1];
 
 void queue_init()
 {
@@ -90,17 +207,17 @@ void queue_init()
 	}
 }
 
-int queue_empty(struct double_linklist *list)
+int queue_empty(struct list *list)
 {
 	if ((list -> next) == list)
 		return 1;
 	else return 0;
 }
 
-void queue_push(struct double_linklist *list, struct double_linklist *new)
+void queue_push(struct list *list, struct list *new)
 {
 
-	struct double_linklist *curr = list;
+	struct list *curr = list;
 	while ((curr -> next) != list) curr = curr -> next;
 	new -> prev = curr;
 	new -> next = list;
@@ -109,9 +226,9 @@ void queue_push(struct double_linklist *list, struct double_linklist *new)
 
 }
 
-void queue_shift(struct double_linklist *list)
+void queue_shift(struct list *list)
 {
-	struct double_linklist *shift = list -> next;
+	struct list *shift = list -> next;
 	list -> next = (list -> next) -> next;
 	(list -> next) -> prev = list;
 	queue_push(list, shift);
@@ -123,7 +240,7 @@ struct task_TCB {
 	unsigned int status;	/*< The status of task. */
 	unsigned int delayTime;	/*< The tick to resume task */
 
-	struct double_linklist list;
+	struct list list;
 };
 
 struct task_TCB TCBs[TASK_LIMIT];
@@ -159,6 +276,7 @@ void *create_task(void (*start)(void), int priority)
 	(TCBs[task_count].list).next = &(TCBs[task_count].list);
 	(TCBs[task_count].list).prev = &(TCBs[task_count].list);
 	queue_push(&(ready_queue[priority]), &TCBs[task_count].list);
+	trace_task_create(task_count, priority);
 	task_count++;
 	return 0;
 }
@@ -199,12 +317,46 @@ void task2_func(void)
 	}
 }
 
+void task3_func(void)
+{
+	print_str("task3: Created!\n\r");
+	print_str("task3: Now, return to kernel mode\n\r");
+	syscall();
+	while (1) {
+		print_str("task3: Running...\n\r");
+		delay(5000);
+	}
+}
+
+void task4_func(void)
+{
+	print_str("task4: Created!\n\r");
+	print_str("task4: Now, return to kernel mode\n\r");
+	syscall();
+	while (1) {
+		print_str("task4: Running...\n\r");
+		delay(5000);
+	}
+}
+
+void task5_func(void)
+{
+	print_str("task5: Created!\n\r");
+	print_str("task5: Now, return to kernel mode\n\r");
+	syscall();
+	while (1) {
+		print_str("task5: Running...\n\r");
+		delay(5000);
+	}
+}
+
 void scheduler()
 {
+	start = 1;
 	while (1) {
-		print_str("OS: Activate next task\n\r");
 		int i;
-
+		tick_count++;
+		prev_task = current_task;
 		for (i = PIROIRTY_LIMIT; i >= 0; i--) {
 			if (!queue_empty(&ready_queue[i])) {
 				current_task = (ready_queue[i].next) -> id;
@@ -212,14 +364,21 @@ void scheduler()
 			}
 		}
 		TCBs[current_task].sp = activate(TCBs[current_task].sp);
-		print_str("OS: Back to OS\n\r");
 	}
+}
+
+void interrupt_enable()
+{
+	*(USART2_CR1) |= 0x00000020;
+	*((__REG)0xE000E104) = 1<<6;
 }
 
 int main(void)
 {
 
 	usart_init();
+
+	host_handle = host_action(SYS_OPEN, "syslog", 6);
 
 	init_TCB(TCBs);
 	queue_init();
@@ -228,6 +387,12 @@ int main(void)
 	create_task(&task1_func, 2);
 	print_str("OS: Back to OS, create task 2\n\r");
 	create_task(&task2_func, 2);
+	print_str("OS: Back to OS, create task 3\n\r");
+	create_task(&task3_func, 2);
+	print_str("OS: Back to OS, create task 4\n\r");
+	create_task(&task4_func, 2);
+	print_str("OS: Back to OS, create task 5\n\r");
+	create_task(&task5_func, 2);
 
 
 	print_str("\nOS: Start scheduler!\n\r");
@@ -236,7 +401,7 @@ int main(void)
 	*SYSTICK_LOAD = 7200000;
 	*SYSTICK_VAL = 0;
 	*SYSTICK_CTRL = 0x07;
-
+	interrupt_enable();
 	scheduler();
 	return 0;
 }

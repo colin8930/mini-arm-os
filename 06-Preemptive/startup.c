@@ -24,6 +24,7 @@
 
 /* main program entry point */
 extern void main(void);
+extern void print_str(const char*);
 
 /* start address for the initialization values of the .data section.
  * defined in linker script */
@@ -73,6 +74,10 @@ void usagefault_handler(void) __attribute((weak, alias("default_handler")));
 void svc_handler(void) __attribute((weak, alias("default_handler")));
 void pendsv_handler(void) __attribute((weak, alias("default_handler")));
 void systick_handler(void) __attribute((weak, alias("default_handler")));
+void __attribute__((interrupt("IRQ"))) USART2_handler(void)
+{
+
+}
 
 __attribute((section(".isr_vector")))
 uint32_t *isr_vectors[] = {
@@ -91,7 +96,46 @@ uint32_t *isr_vectors[] = {
 	0,
 	0,
 	(uint32_t *) pendsv_handler,		/* pendsv handler */
-	(uint32_t *) systick_handler		/* systick handler */
+	(uint32_t *) systick_handler,		/* systick handler */
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	(uint32_t *) USART2_handler
 };
 
 void rcc_clock_init(void)
